@@ -1,0 +1,2 @@
+rootProject.name = "NovaxBooster"
+include ':app'

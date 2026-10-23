@@ -17,17 +17,60 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.5
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Write local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+      - name: Build APK directly (aapt2, javac, d8)
+        run: |
+          set -e
+          
+          # Variables
+          PLATFORM="$ANDROID_HOME/platforms/android-34/android.jar"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
+          APK_DIR="build_apk"
+          
+          mkdir -p "$APK_DIR/obj" "$APK_DIR/dex"
 
-      - name: Build with Gradle Wrapper
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+          # 1. Compile resources
+          echo "Compiling resources..."
+          "$BUILD_TOOLS/aapt2" compile --dir app/src/main/res -o "$APK_DIR/obj/"
+          
+          echo "Linking resources..."
+          "$BUILD_TOOLS/aapt2" link -o "$APK_DIR/unsigned.apk" \
+            -I "$PLATFORM" \
+            --manifest app/src/main/AndroidManifest.xml \
+            --java "$APK_DIR/gen" \
+            -R "$APK_DIR/obj/"*.flat \
+            --auto-add-overlay
+
+          # 2. Compile Java
+          echo "Compiling Java..."
+          mkdir -p "$APK_DIR/classes"
+          javac -source 17 -target 17 -d "$APK_DIR/classes" \
+            -classpath "$PLATFORM" \
+            -sourcepath app/src/main/java \
+            app/src/main/java/com/novax/booster/*.java
+
+          # 3. Convert to DEX
+          echo "Converting to DEX..."
+          "$BUILD_TOOLS/d8" --lib "$PLATFORM" \
+            --output "$APK_DIR/dex" \
+            "$APK_DIR/classes/com/novax/booster/"*.class
+
+          # 4. Add DEX to APK
+          echo "Adding DEX to APK..."
+          cd "$APK_DIR/dex" && zip -uj ../unsigned.apk classes.dex && cd ../..
+
+          # 5. Sign APK
+          echo "Signing APK..."
+          keytool -genkey -v -keystore "$APK_DIR/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          
+          "$BUILD_TOOLS/apksigner" sign --ks "$APK_DIR/debug.keystore" \
+            --ks-pass pass:android --key-pass pass:android \
+            --out "$APK_DIR/NOVAX-BOOSTER.apk" "$APK_DIR/unsigned.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: novax-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: build_apk/NOVAX-BOOSTER.apk
